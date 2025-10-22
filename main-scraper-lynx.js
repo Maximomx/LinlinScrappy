@@ -99,57 +99,24 @@ class LinkedInAdScraper {
             
             await page.waitForTimeout(3000);
 
-            console.log('Extracting ad links and detecting video ads...');
+            console.log('Extracting ad links...');
             const adLinks = await page.evaluate(() => {
                 const links = Array.from(document.querySelectorAll('a[href*="/ad-library/detail/"]'));
                 return links
-                    .map(link => {
-                        // Check multiple parent levels for video indicators
-                        let parent = link;
-                        let isVideoAd = false;
-                        
-                        // Check up to 5 levels up for video indicators
-                        for (let i = 0; i < 5; i++) {
-                            parent = parent.parentElement;
-                            if (!parent) break;
-                            
-                            const text = parent.textContent || '';
-                            const html = parent.innerHTML || '';
-                            
-                            // Check for various video indicators
-                            if (text.includes('Video Ad') || 
-                                text.includes('Video ad') ||
-                                html.includes('video-player') ||
-                                html.includes('data-test-ad-type="video"') ||
-                                parent.querySelector('[data-test-ad-type="video"]') ||
-                                parent.querySelector('.video-player')) {
-                                isVideoAd = true;
-                                break;
-                            }
-                        }
-                        
-                        return {
-                            url: link.href,
-                            id: link.href.match(/detail\/(\d+)/)?.[1] || '',
-                            isVideo: isVideoAd
-                        };
-                    })
+                    .map(link => ({
+                        url: link.href,
+                        id: link.href.match(/detail\/(\d+)/)?.[1] || ''
+                    }))
                     .filter(ad => ad.id);
             });
 
             // Remove duplicates
             const uniqueAds = Array.from(new Map(adLinks.map(ad => [ad.id, ad])).values());
-            
-            // Filter out video ads
-            const nonVideoAds = uniqueAds.filter(ad => !ad.isVideo);
-            const videoAds = uniqueAds.filter(ad => ad.isVideo);
-            
-            const adsToProcess = nonVideoAds.slice(0, this.options.maxAdsToProcess);
+            const adsToProcess = uniqueAds.slice(0, this.options.maxAdsToProcess);
             
             console.log(`Found ${uniqueAds.length} total unique ads`);
-            console.log(`  - ${nonVideoAds.length} static/image ads`);
-            console.log(`  - ${videoAds.length} video ads (excluded)`);
             console.log(`Will process ${adsToProcess.length} ads (max: ${this.options.maxAdsToProcess})`);
+            console.log(`Note: Video ads will be detected and skipped at Level 2`);
 
             return adsToProcess;
 
