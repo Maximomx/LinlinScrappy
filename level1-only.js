@@ -1,10 +1,78 @@
 const puppeteer = require('puppeteer-core');
 const fs = require('fs');
+const { exec } = require('child_process');
+const { promisify } = require('util');
+const path = require('path');
+
+const execAsync = promisify(exec);
 
 // Configuration
 const BROWSERLESS_API_KEY = process.env.BROWSERLESS_API_KEY;
 const BROWSERLESS_UNBLOCK_URL = 'https://production-sfo.browserless.io/chromium/unblock';
 const TIMEOUT = 5 * 60 * 1000;
+
+function sanitizeDirectoryName(name) {
+    return name
+        .replace(/[^a-zA-Z0-9\s-]/g, '')
+        .replace(/\s+/g, '_')
+        .substring(0, 50)
+        .toLowerCase();
+}
+
+async function getCompanyName(targetUrl) {
+    console.log('Extracting company name from page...');
+    try {
+        const { stdout } = await execAsync(`lynx -dump "${targetUrl}" 2>/dev/null`);
+        
+        // Look for company name before "Promoted" text
+        const lines = stdout.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+            if (lines[i].trim() === 'Promoted' && i > 0) {
+                // Check previous line for company name
+                const prevLine = lines[i - 1].trim();
+                if (prevLine && prevLine !== 'advertiser logo' && prevLine.length > 0) {
+                    console.log(`Found company name: ${prevLine}`);
+                    return prevLine;
+                }
+            }
+        }
+        
+        console.log('Company name not found in page');
+        return null;
+    } catch (error) {
+        console.error('Error extracting company name:', error.message);
+        return null;
+    }
+}
+
+function createCompanyDirectory(companyName, companyId) {
+    const timestamp = new Date().toISOString().split('T')[0].replace(/-/g, '');
+    let baseDirName;
+    
+    if (companyName) {
+        const sanitizedName = sanitizeDirectoryName(companyName);
+        baseDirName = `${sanitizedName}_${timestamp}`;
+    } else if (companyId) {
+        baseDirName = `company_${companyId}_${timestamp}`;
+    } else {
+        baseDirName = `company_unknown_${timestamp}`;
+    }
+    
+    // Check if directory exists and append run number if needed
+    let dirPath = path.join('./', baseDirName);
+    let runNumber = 1;
+    
+    while (fs.existsSync(dirPath)) {
+        dirPath = path.join('./', `${baseDirName}_run${runNumber}`);
+        runNumber++;
+    }
+    
+    fs.mkdirSync(dirPath, { recursive: true });
+    const finalDirName = path.basename(dirPath);
+    console.log(`Created output directory: ${finalDirName}\n`);
+    
+    return dirPath;
+}
 
 async function scrapeAdList(targetUrl, maxAds = 30) {
     if (!BROWSERLESS_API_KEY) {
@@ -15,6 +83,12 @@ async function scrapeAdList(targetUrl, maxAds = 30) {
     console.log('Starting Level 1 scraping (finding ads)...');
     console.log('Target URL:', targetUrl);
     console.log('Max ads to find:', maxAds);
+    
+    const companyIdMatch = targetUrl.match(/companyIds=([^&]+)/);
+    const companyId = companyIdMatch ? companyIdMatch[1] : null;
+    
+    const companyName = await getCompanyName(targetUrl);
+    const outputDir = createCompanyDirectory(companyName, companyId);
     
     let browser;
     try {
@@ -108,12 +182,21 @@ async function scrapeAdList(targetUrl, maxAds = 30) {
             console.log('');
         });
 
-        // Save to JSON file
+        // Save to JSON file in the company directory
         const filename = `ads_list_${Date.now()}.json`;
-        fs.writeFileSync(filename, JSON.stringify(adsToReturn, null, 2));
-        console.log(`Results saved to: ${filename}`);
+        const filepath = path.join(outputDir, filename);
+        const resultData = {
+            companyName,
+            companyId,
+            targetUrl,
+            scrapedAt: new Date().toISOString(),
+            totalAds: adsToReturn.length,
+            ads: adsToReturn
+        };
+        fs.writeFileSync(filepath, JSON.stringify(resultData, null, 2));
+        console.log(`Results saved to: ${filepath}`);
 
-        return adsToReturn;
+        return { outputDir, ads: adsToReturn, companyName, companyId };
 
     } catch (error) {
         console.error('Error during scraping:', error.message);

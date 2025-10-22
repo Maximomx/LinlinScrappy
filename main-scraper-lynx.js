@@ -241,6 +241,32 @@ class LinkedInAdScraper {
         }
     }
 
+    async getCompanyNameFromPage(targetUrl) {
+        console.log('Extracting company name from page...');
+        try {
+            const { stdout } = await execAsync(`lynx -dump "${targetUrl}" 2>/dev/null`);
+            
+            // Look for company name before "Promoted" text
+            const lines = stdout.split('\n');
+            for (let i = 0; i < lines.length; i++) {
+                if (lines[i].trim() === 'Promoted' && i > 0) {
+                    // Check previous line for company name
+                    const prevLine = lines[i - 1].trim();
+                    if (prevLine && prevLine !== 'advertiser logo' && prevLine.length > 0) {
+                        console.log(`Found company name: ${prevLine}`);
+                        return prevLine;
+                    }
+                }
+            }
+            
+            console.log('Company name not found in page');
+            return null;
+        } catch (error) {
+            console.error('Error extracting company name:', error.message);
+            return null;
+        }
+    }
+
     async processAds(targetUrl, scrapingLevel = 3) {
         console.log('\n🚀 Starting LinkedIn Ad Scraper Pipeline (with Lynx Level 2)...');
         console.log(`Scraping Level: ${scrapingLevel}`);
@@ -250,9 +276,12 @@ class LinkedInAdScraper {
         const companyIdMatch = targetUrl.match(/companyIds=([^&]+)/);
         const companyId = companyIdMatch ? companyIdMatch[1] : null;
         
+        // Get company name early (before creating directory)
+        const companyName = await this.getCompanyNameFromPage(targetUrl);
+        
         // Create output directory if not set
         if (!this.options.outputDir) {
-            this.options.outputDir = this.createCompanyDirectory(companyId, targetUrl);
+            this.options.outputDir = this.createCompanyDirectory(companyId, targetUrl, companyName);
             // Reinitialize ImageDownloader with the new directory
             this.imageDownloader = new ImageDownloader(this.options.outputDir);
         }
@@ -262,8 +291,10 @@ class LinkedInAdScraper {
             startTime: new Date().toISOString(),
             targetUrl,
             companyId,
+            companyName,
             scrapingLevel,
             processedAds: [],
+            failedAds: [],
             downloadResults: [],
             summary: {
                 totalAdsFound: 0,
@@ -317,11 +348,6 @@ class LinkedInAdScraper {
                                     console.log(`  SKIPPED: Video ad (no static image)`);
                                     results.summary.videoAdsSkipped++;
                                 } else {
-                                    // Update directory name with actual company name if this is the first ad
-                                    if (results.processedAds.length === 0 && adDetails.company) {
-                                        this.updateDirectoryWithCompanyName(adDetails.company, companyId);
-                                    }
-                                    
                                     results.processedAds.push(adDetails);
                                     results.summary.successfulDetails++;
                                     
@@ -368,11 +394,21 @@ class LinkedInAdScraper {
                             } else {
                                 console.log(`  No headline found`);
                                 results.summary.failedDetails++;
+                                results.failedAds.push({
+                                    adId,
+                                    adUrl,
+                                    reason: 'No headline found'
+                                });
                             }
                             
                         } catch (error) {
                             console.error(`  ERROR: ${error.message}`);
                             results.summary.failedDetails++;
+                            results.failedAds.push({
+                                adId,
+                                adUrl,
+                                reason: error.message
+                            });
                         }
                         
                         results.summary.totalAdsProcessed++;
@@ -428,42 +464,33 @@ class LinkedInAdScraper {
             .toLowerCase();
     }
     
-    createCompanyDirectory(companyId, targetUrl) {
-        // Get company name from first scraped ad or use companyId
-        let dirName = companyId ? `company_${companyId}` : 'company_unknown';
+    createCompanyDirectory(companyId, targetUrl, companyName = null) {
         const timestamp = new Date().toISOString().split('T')[0].replace(/-/g, '');
-        const fullDirName = `${dirName}_${timestamp}`;
-        const dirPath = path.join('./', fullDirName);
+        let baseDirName;
         
-        // Create directory if it doesn't exist
-        if (!fs.existsSync(dirPath)) {
-            fs.mkdirSync(dirPath, { recursive: true });
-            console.log(`Created output directory: ${fullDirName}`);
+        if (companyName) {
+            const sanitizedName = this.sanitizeDirectoryName(companyName);
+            baseDirName = `${sanitizedName}_${timestamp}`;
+        } else if (companyId) {
+            baseDirName = `company_${companyId}_${timestamp}`;
+        } else {
+            baseDirName = `company_unknown_${timestamp}`;
         }
         
-        this.originalDirPath = dirPath;
+        // Check if directory exists and append run number if needed
+        let dirPath = path.join('./', baseDirName);
+        let runNumber = 1;
+        
+        while (fs.existsSync(dirPath)) {
+            dirPath = path.join('./', `${baseDirName}_run${runNumber}`);
+            runNumber++;
+        }
+        
+        fs.mkdirSync(dirPath, { recursive: true });
+        const finalDirName = path.basename(dirPath);
+        console.log(`Created output directory: ${finalDirName}\n`);
+        
         return dirPath;
-    }
-    
-    updateDirectoryWithCompanyName(companyName, companyId) {
-        if (!this.originalDirPath || !companyName) return;
-        
-        const sanitizedName = this.sanitizeDirectoryName(companyName);
-        const timestamp = new Date().toISOString().split('T')[0].replace(/-/g, '');
-        const newDirName = `${sanitizedName}_${timestamp}`;
-        const newDirPath = path.join('./', newDirName);
-        
-        // Rename directory if company name is available
-        try {
-            if (fs.existsSync(this.originalDirPath) && this.originalDirPath !== newDirPath) {
-                fs.renameSync(this.originalDirPath, newDirPath);
-                console.log(`Renamed directory to: ${newDirName}`);
-                this.options.outputDir = newDirPath;
-                this.imageDownloader = new ImageDownloader(newDirPath);
-            }
-        } catch (error) {
-            console.error(`Failed to rename directory: ${error.message}`);
-        }
     }
     
     saveResults(results) {
