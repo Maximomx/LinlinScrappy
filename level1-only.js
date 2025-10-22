@@ -58,18 +58,24 @@ function createCompanyDirectory(companyName, companyId) {
         baseDirName = `company_unknown_${timestamp}`;
     }
     
+    // Create output directory structure: output/{company_name}/
+    const outputBaseDir = path.join('./', 'output');
+    if (!fs.existsSync(outputBaseDir)) {
+        fs.mkdirSync(outputBaseDir, { recursive: true });
+    }
+    
     // Check if directory exists and append run number if needed
-    let dirPath = path.join('./', baseDirName);
+    let dirPath = path.join(outputBaseDir, baseDirName);
     let runNumber = 1;
     
     while (fs.existsSync(dirPath)) {
-        dirPath = path.join('./', `${baseDirName}_run${runNumber}`);
+        dirPath = path.join(outputBaseDir, `${baseDirName}_run${runNumber}`);
         runNumber++;
     }
     
     fs.mkdirSync(dirPath, { recursive: true });
-    const finalDirName = path.basename(dirPath);
-    console.log(`Created output directory: ${finalDirName}\n`);
+    const relativePath = path.relative('./', dirPath);
+    console.log(`Created output directory: ${relativePath}\n`);
     
     return dirPath;
 }
